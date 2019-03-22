@@ -8,17 +8,17 @@
 import math
 from collections import OrderedDict
 
-import h5py
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.model_zoo as model_zoo
 from tensorflow import keras
 from torch.nn import init
 
-from .. import modules
-from ..modules import _ConvBnReLU, _Flatten, _SeparableConv2d, _SepConvBnReLU
+from . import model_zoo, modules
+from .modules import _ConvBnReLU, _Flatten, _SeparableConv2d, _SepConvBnReLU
+from .sync_batchnorm.batchnorm import SynchronizedBatchNorm2d
+
+__all__ = ["xception_v1"]
 
 modules._BN_KWARGS["eps"] = 1e-3
 modules._BN_KWARGS["momentum"] = 0.99
@@ -90,65 +90,23 @@ class XceptionV1(nn.Sequential):
         self.add_module("middle_flow", nn.Sequential(OrderedDict(middle_layers)))
         self.add_module("exit_flow", nn.Sequential(OrderedDict(exit_layers)))
 
-    def load_from_keras(self):
 
-        assert self.n_classes == 1000
+def add_attribute(cls):
+    cls.pretrained_source = "Keras"
+    cls.channels = "RGB"
+    cls.image_shape = (299, 299)
+    cls.mean = torch.tensor([127.5, 127.5, 127.5])
+    cls.std = torch.tensor([255.0, 255.0, 255.0])
+    return cls
 
-        weights_path = keras.utils.get_file(
-            "xception_weights_tf_dim_ordering_tf_kernels.h5",
-            (
-                "https://github.com/fchollet/deep-learning-models/"
-                "releases/download/v0.4/"
-                "xception_weights_tf_dim_ordering_tf_kernels.h5"
-            ),
-            cache_subdir="models",
-            file_hash="0a58e3b7378bc2990ea3b43d5981f1f6",
-        )
 
-        with h5py.File(weights_path, mode="r") as f:
-            state_dict = OrderedDict()
-
-            s_idx = 1
-            b_idx = 1
-            for pth_layer, pth_module in self.named_modules():
-                if isinstance(pth_module, _SeparableConv2d):
-                    h5_layer = f"separableconvolution2d_{s_idx}"
-                    h5_value = np.asarray(f[h5_layer][f"{h5_layer}_depthwise_kernel:0"])
-                    h5_value = torch.tensor(h5_value.transpose(2, 3, 0, 1))
-                    state_dict[pth_layer + ".depthwise.weight"] = h5_value
-                    h5_value = np.asarray(f[h5_layer][f"{h5_layer}_pointwise_kernel:0"])
-                    h5_value = torch.tensor(h5_value.transpose(3, 2, 0, 1))
-                    state_dict[pth_layer + ".pointwise.weight"] = h5_value
-                    s_idx += 1
-
-                if isinstance(pth_module, nn.BatchNorm2d):
-                    h5_layer = f"batchnormalization_{b_idx}"
-                    h5_value = np.asarray(f[h5_layer][f"{h5_layer}_gamma:0"])
-                    state_dict[pth_layer + ".weight"] = torch.tensor(h5_value)
-                    h5_value = np.asarray(f[h5_layer][f"{h5_layer}_beta:0"])
-                    state_dict[pth_layer + ".bias"] = torch.tensor(h5_value)
-                    h5_value = np.asarray(f[h5_layer][f"{h5_layer}_running_mean:0"])
-                    state_dict[pth_layer + ".running_mean"] = torch.tensor(h5_value)
-                    h5_value = np.asarray(f[h5_layer][f"{h5_layer}_running_std:0"])
-                    state_dict[pth_layer + ".running_var"] = torch.tensor(h5_value)
-                    b_idx += 1
-
-            idx = 1
-            for pth_layer, pth_module in self.named_modules():
-                if isinstance(pth_module, nn.Conv2d):
-                    if pth_layer + ".weight" not in state_dict:
-                        h5_layer = f"convolution2d_{idx}"
-                        h5_value = np.asarray(f[h5_layer][f"{h5_layer}_W:0"])
-                        h5_value = torch.tensor(h5_value.transpose(3, 2, 0, 1))
-                        state_dict[pth_layer + ".weight"] = h5_value
-                        idx += 1
-
-            h5_value = torch.tensor(np.asarray(f["dense_2"]["dense_2_W:0"]))
-            state_dict["exit_flow.fc.weight"] = h5_value.permute(1, 0)
-            h5_value = torch.tensor(np.asarray(f["dense_2"]["dense_2_b:0"]))
-            state_dict["exit_flow.fc.bias"] = h5_value
-
-            self.load_state_dict(state_dict)
+def xception_v1(n_classes=1000, pretrained=False, **kwargs):
+    model = XceptionV1(n_classes=n_classes)
+    if pretrained:
+        state_dict = model_zoo.load_keras_xceptionv1(model_torch=model)
+        model.load_state_dict(state_dict)
+        model = add_attribute(model)
+    return model
 
 
 if __name__ == "__main__":
@@ -161,4 +119,3 @@ if __name__ == "__main__":
     print("[test]")
     print("input:", tuple(image.shape))
     print("logit:", tuple(model(image).shape))
-

@@ -11,10 +11,8 @@ def xception_v1(pretrained=False, *args, **kwargs):
     Xception v1 model
     """
 
-    from models.classification.xception import XceptionV1 as _xception_v1
+    from models.classification.xception import xception_v1 as _xception_v1
 
-    model = _xception_v1(*args, **kwargs)
-    if pretrained:
-        model.load_from_keras()
+    model = _xception_v1(pretrained=True, *args, **kwargs)
 
     return model

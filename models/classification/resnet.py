@@ -2,8 +2,8 @@
 # coding: utf-8
 #
 # Author: Kazuto Nakashima
-# URL:    http://kazuto1011.github.io
-# Date:   06 March 2019
+# URL:    https://kazuto1011.github.io
+# Date:   04 March 2019
 
 from collections import OrderedDict
 
@@ -11,9 +11,26 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ..modules import _BnReLU, _ConvBnReLU, _Flatten
+from . import model_zoo
+from .modules import _BnReLU, _ConvBnReLU, _Flatten
+
+__all__ = ["resnet18", "resnet34", "resnet50", "resnet101", "resnet152"]
 
 _BOTTLENECK_EXPANSION = 4
+_PRETRAINED_SETTINGS = {
+    "resnet50": {
+        "v1": {
+            "tar_url": "http://download.tensorflow.org/models/official/20181001_resnet/savedmodels/resnet_v1_fp32_savedmodel_NHWC.tar.gz",
+            "ckpt_relpath": "resnet_v1_fp32_savedmodel_NHWC/1538686669/variables/variables",
+            "model_name": "resnet50_v1-60f6f4f6.pth",
+        },
+        "v2": {
+            "tar_url": "http://download.tensorflow.org/models/official/20181001_resnet/savedmodels/resnet_v2_fp32_savedmodel_NHWC.tar.gz",
+            "ckpt_relpath": "resnet_v2_fp32_savedmodel_NHWC/1538687283/variables/variables",
+            "model_name": "resnet50_v2-408dc8bb.pth",
+        },
+    }
+}
 
 
 def init_weight(module):
@@ -151,12 +168,14 @@ class _Layer(nn.Sequential):
                 ),
             )
 
+        self.out_ch = out_ch
+
 
 class ResNetV1(nn.Sequential):
-    def __init__(self, block, n_blocks, n_classes, n_filters=64):
+    def __init__(self, block, n_blocks, in_ch, n_classes, n_filters=64):
         super().__init__()
         ch = [n_filters * 2 ** p for p in range(6)]
-        self.add_module("layer1", _Stem("v1", 3, ch[0]))
+        self.add_module("layer1", _Stem("v1", in_ch, ch[0]))
         self.add_module("layer2", _Layer(block, n_blocks[0], ch[0], ch[2], 1))
         self.add_module("layer3", _Layer(block, n_blocks[1], ch[2], ch[3], 2))
         self.add_module("layer4", _Layer(block, n_blocks[2], ch[3], ch[4], 2))
@@ -169,10 +188,10 @@ class ResNetV1(nn.Sequential):
 
 
 class ResNetV2(nn.Sequential):
-    def __init__(self, block, n_blocks, n_classes, n_filters=64):
+    def __init__(self, block, n_blocks, in_ch, n_classes, n_filters=64):
         super().__init__()
         ch = [n_filters * 2 ** p for p in range(6)]
-        self.add_module("layer1", _Stem("v2", 3, ch[0]))
+        self.add_module("layer1", _Stem("v2", in_ch, ch[0]))
         self.add_module("layer2", _Layer(block, n_blocks[0], ch[0], ch[2], 1))
         self.add_module("layer3", _Layer(block, n_blocks[1], ch[2], ch[3], 2))
         self.add_module("layer4", _Layer(block, n_blocks[2], ch[3], ch[4], 2))
@@ -184,60 +203,46 @@ class ResNetV2(nn.Sequential):
         self.apply(init_weight)
 
 
+_BASICBLOCK_ARCH = {"v1": (ResNetV1, _BasicBlockV1), "v2": (ResNetV2, _BasicBlockV2)}
+_BOTTLENECK_ARCH = {"v1": (ResNetV1, _BottleneckV1), "v2": (ResNetV2, _BottleneckV2)}
+
+
+def add_attribute(cls):
+    cls.pretrained_source = "TensorFlow"
+    cls.channels = "RGB"
+    cls.image_shape = (224, 224)
+    cls.mean = torch.tensor([123.68, 116.78, 103.94])
+    cls.std = torch.tensor([1.0, 1.0, 1.0])
+    return cls
+
+
 def resnet18(n_classes, version="v1", **kwargs):
-    ResNet, block = {
-        "v1": (ResNetV1, _BasicBlockV1),
-        "v2": (ResNetV2, _BasicBlockV2),
-    }.get(version)
-    return ResNet(block, [2, 2, 2, 2], n_classes, **kwargs)
+    ResNet, block = _BASICBLOCK_ARCH.get(version)
+    return ResNet(block, [2, 2, 2, 2], 3, n_classes, **kwargs)
 
 
 def resnet34(n_classes, version="v1", **kwargs):
-    ResNet, block = {
-        "v1": (ResNetV1, _BasicBlockV1),
-        "v2": (ResNetV2, _BasicBlockV2),
-    }.get(version)
-    return ResNet(block, [3, 4, 6, 3], n_classes, **kwargs)
+    ResNet, block = _BASICBLOCK_ARCH.get(version)
+    return ResNet(block, [3, 4, 6, 3], 3, n_classes, **kwargs)
 
 
-def resnet50(n_classes, version="v1", **kwargs):
-    ResNet, block = {
-        "v1": (ResNetV1, _BottleneckV1),
-        "v2": (ResNetV2, _BottleneckV2),
-    }.get(version)
-    return ResNet(block, [3, 4, 6, 3], n_classes, **kwargs)
+def resnet50(n_classes, version="v1", pretrained=False, **kwargs):
+    ResNet, block = _BOTTLENECK_ARCH.get(version)
+    model = ResNet(block, [3, 4, 6, 3], 3, n_classes, **kwargs)
+    if pretrained:
+        state_dict = model_zoo.load_tensorflow_resnet(
+            model_torch=model, **_PRETRAINED_SETTINGS["resnet50"][version]
+        )
+        model.load_state_dict(state_dict)
+        model = add_attribute(model)
+    return model
 
 
 def resnet101(n_classes, version="v1", **kwargs):
-    ResNet, block = {
-        "v1": (ResNetV1, _BottleneckV1),
-        "v2": (ResNetV2, _BottleneckV2),
-    }.get(version)
-    return ResNet(block, [3, 4, 23, 3], n_classes, **kwargs)
+    ResNet, block = _BOTTLENECK_ARCH.get(version)
+    return ResNet(block, [3, 4, 23, 3], 3, n_classes, **kwargs)
 
 
 def resnet152(n_classes, version="v1", **kwargs):
-    ResNet, block = {
-        "v1": (ResNetV1, _BottleneckV1),
-        "v2": (ResNetV2, _BottleneckV2),
-    }.get(version)
-    return ResNet(block, [3, 8, 36, 3], n_classes, **kwargs)
-
-
-if __name__ == "__main__":
-    import itertools
-
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    torch.set_grad_enabled(False)
-
-    image = torch.randn(1, 3, 224, 224).to(device)
-    layers = [18, 34, 50, 101, 152]
-    versions = ["v1", "v2"]
-
-    for n, v in itertools.product(layers, versions):
-        print(f"ResNet-{n}", v)
-        model = eval(f"resnet{n}")(n_classes=1001, version=v)
-        model.eval()
-        model.to(device)
-        print("Image:", tuple(image.shape))
-        print("Logit:", tuple(model(image).shape))
+    ResNet, block = _BOTTLENECK_ARCH.get(version)
+    return ResNet(block, [3, 8, 36, 3], 3, n_classes, **kwargs)
